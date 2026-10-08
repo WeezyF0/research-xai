@@ -1,0 +1,185 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\begin{document}
+
+\title{Does Explaining Help Detecting? A Pilot Evaluation of SHAP-Based Zero-Day Network Intrusion Detection}
+
+\author{
+\IEEEauthorblockN{1\textsuperscript{st} Given Name Surname}
+\IEEEauthorblockA{\textit{dept. name of organization} \\
+\textit{name of organization}\\
+City, Country \\
+email address or ORCID}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Given Name Surname}
+\IEEEauthorblockA{\textit{dept. name of organization} \\
+\textit{name of organization}\\
+City, Country \\
+email address or ORCID}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Given Name Surname}
+\IEEEauthorblockA{\textit{dept. name of organization} \\
+\textit{name of organization}\\
+City, Country \\
+email address or ORCID}
+}
+
+\maketitle
+
+\begin{abstract}
+Tree-based intrusion detectors such as XGBoost are accurate on known attacks but miss novel ones, while deep anomaly detectors find novel attacks but are hard to interpret. A recent line of work bridges the two by explaining the tree model with SHAP and training an autoencoder on the explanations, flagging flows whose explanations reconstruct poorly as possible zero-day attacks. This design has so far been evaluated only on detection accuracy, without a controlled comparison against the same detector on raw features, and without the explanation-quality, robustness and cost criteria that recent surveys of explainable intrusion detection call for. We present a pilot evaluation on the NSL-KDD official new-attack split that asks six questions in one pipeline: whether the explanation domain helps, whether SHAP-based feature reduction preserves it, whether SHAP and LIME agree, whether the resulting alarms can themselves be explained, whether the second stage survives SHAP-guided evasion of the first, and what it costs. With all thresholds fixed on validation data at a 2 percent false alarm budget, an autoencoder on SHAP vectors raises zero-day recall of the fused system from 37.9 percent to 78.5 percent, compared with 60.0 percent for the same autoencoder on raw features, at a cost of a higher false alarm rate. Its per-feature reconstruction error yields alarm explanations that pass a deletion test, and it still flags 94.8 percent of attacks that evade XGBoost. SHAP and LIME, however, agree on only half of the top five features. We release the code as a reusable benchmark.
+\end{abstract}
+
+\begin{IEEEkeywords}
+network intrusion detection, explainable artificial intelligence, SHAP, zero-day attacks, anomaly detection, autoencoder
+\end{IEEEkeywords}
+
+\section{Introduction}
+Supervised network intrusion detection systems (NIDS) built on gradient-boosted trees reach high accuracy on attacks seen during training but degrade on new (zero-day) attacks, whereas unsupervised anomaly detectors such as autoencoders can flag novel traffic but offer little insight into why a flow was flagged. Barnard et al.~\cite{barnard2022robust} proposed combining both: an XGBoost~\cite{chen2016xgboost} classifier is explained with TreeSHAP~\cite{lundberg2020trees}, and an autoencoder trained on the resulting explanation vectors flags flows whose explanations it cannot reconstruct. On NSL-KDD~\cite{tavallaee2009nslkdd}, the combined system raised accuracy from 79 percent to 93 percent.
+
+Two observations motivate this paper. First, the original evaluation did not compare the autoencoder on explanations with the same autoencoder on raw features, so it is unclear whether the gain comes from the explanation domain or simply from adding any anomaly detector to XGBoost. From the published confusion statistics we compute that the false positive rate rose from about 2.9 percent to about 12.7 percent, a cost that was not reported. Second, surveys of explainable intrusion detection~\cite{neupane2022xids,khan2024xids,rjoub2023survey} and evaluation frameworks~\cite{arreche2024exai,warnecke2020evaluating} argue that such systems must also be judged on explanation quality, consistency between explainers, robustness to adversaries and computational cost. These criteria have not been applied to explanation-based zero-day detection.
+
+We contribute a single, reproducible pipeline that answers six questions on the same data, seed and threshold policy:
+\begin{itemize}
+\item Q1: Does a detector on SHAP vectors find zero-day attacks better than the same detector on raw features?
+\item Q2: Does reducing to the top ten SHAP features~\cite{nugraha2025versatile} preserve detection?
+\item Q3: Do SHAP and LIME~\cite{ribeiro2016lime} agree on the most important features?
+\item Q4: Can the second-stage alarm itself be explained, and is that explanation faithful and stable?
+\item Q5: Does the second stage still flag attacks crafted with SHAP to evade XGBoost?
+\item Q6: What does each component cost per flow?
+\end{itemize}
+This paper reports a pilot on one dataset and one seed; it is intended to validate the benchmark and indicate which effects are worth confirming at scale.
+
+\section{Related Work}
+\textit{Explanations as features.} Barnard et al.~\cite{barnard2022robust} are, to our knowledge, the only authors to feed SHAP explanation vectors into a second detector for novelty detection; recent surveys~\cite{neupane2022xids,khan2024xids} do not list other work in this direction. The reverse direction, explaining an autoencoder's anomalies with SHAP, was studied by Antwarg et al.~\cite{antwarg2021explaining}.
+
+\textit{Efficiency and consistency.} Nugraha et al.~\cite{nugraha2025versatile} combine ANOVA and SHAP to keep ten features, reducing LIME latency by up to 87 percent, and flag flows whose SHAP and LIME top features disagree.
+
+\textit{Evaluating explanations.} Warnecke et al.~\cite{warnecke2020evaluating} and Arreche et al.~\cite{arreche2024exai} evaluate explanation methods in security on descriptive accuracy, sparsity, stability, efficiency, robustness and completeness. Slack et al.~\cite{slack2020fooling} show that post hoc explainers can be manipulated, and the survey of Khan et al.~\cite{khan2024xids} lists attacks that use SHAP to evade tree-based detectors. Neupane et al.~\cite{neupane2022xids} list evaluation metrics, adversarial attacks, misleading explanations and scalability among the open challenges for explainable NIDS.
+
+\section{Method}
+\subsection{Pipeline}
+The first stage is an XGBoost classifier with the settings of~\cite{barnard2022robust} (100 trees, depth 6, learning rate 0.3) that outputs $p(x)$, the probability that flow $x$ is an attack. Interventional TreeSHAP decomposes $p(x)$ into $\boldsymbol{\phi}(x)\in\mathbb{R}^d$ using a fixed background of 500 training flows. The second stage is an anomaly detector trained on one of three inputs: raw features (signed $\log(1+|x|)$, then min-max scaled to $[-1,1]$), SHAP vectors (min-max scaled to $[-1,1]$), or their concatenation. We use two detectors: a small autoencoder ($d$-64-16-64-$d$, ReLU, tanh output, mean absolute error loss, early stopping on validation) and an Isolation Forest~\cite{liu2008iforest} with 200 trees. The autoencoder anomaly score is the absolute reconstruction error
+\begin{equation}
+s(z)=\frac{1}{d}\sum_{i=1}^{d}\left|z_i-\hat{z}_i\right|,\label{eq:are}
+\end{equation}
+where $z$ is the scaled input and $\hat{z}$ its reconstruction.
+
+\subsection{Thresholds and fusion}
+Unlike~\cite{barnard2022robust}, which thresholds at the 95th percentile of training error, we set the anomaly threshold so that 2 percent of benign \emph{validation} flows are flagged. Test data are never used for fitting or tuning. As in~\cite{barnard2022robust}, the final alert is raised if XGBoost predicts an attack ($p(x)\geq 0.5$) or the detector flags the flow. Each detector is trained either on benign flows only or on all training flows.
+
+\subsection{The six questions}
+\textit{Q1} compares inputs and detectors by the area under the ROC curve (AUROC) of the anomaly score for zero-day versus all other test flows, the AUROC restricted to flows XGBoost classifies as benign, and the zero-day recall, false positive rate (FPR), F1 and Matthews correlation coefficient (MCC) of the fused system.
+\textit{Q2} retrains XGBoost on the ten features with the largest mean $|\phi_i|$ on training data and repeats the benign-trained SHAP autoencoder.
+\textit{Q3} explains 200 random test flows with LIME (1000 samples, no discretization) and reports the overlap of the SHAP and LIME top-5 feature sets, $|S_{\mathrm{SHAP}}\cap S_{\mathrm{LIME}}|/5$.
+\textit{Q4} explains each alarm of the benign-trained SHAP autoencoder by the five features with the largest per-feature reconstruction error $|z_i-\hat{z}_i|$. We test fidelity by deletion: replacing those five entries with the benign training mean should reduce $s(z)$ far more than replacing five random entries. We also report stability (top-5 overlap with a second autoencoder trained from a different seed) and sparsity (share of the error carried by the top five features).
+\textit{Q5} takes 300 attacks that XGBoost detects and, for up to five rounds, sets the attacker-controllable feature with the largest positive SHAP value to its benign median, stopping when XGBoost predicts benign. Fourteen traffic statistics such as byte counts, connection counts and error rates are treated as controllable; protocol, service and flag are not. We then measure how many evading flows each second-stage detector still flags at its 2 percent threshold.
+\textit{Q6} reports training and per-flow inference time.
+
+\section{Experimental Setup}
+We use the NSL-KDD KDDTrain+ and KDDTest+ files~\cite{tavallaee2009nslkdd}. The 3,750 test flows whose attack types never occur in training form the zero-day class, as in~\cite{barnard2022robust}; the test set also contains 9,711 benign flows. Training data are split 80/20 into training (100,778 flows) and validation sets, stratified by attack type. Categorical features are ordinally encoded. All results use seed 0. Experiments ran on an 8-thread CPU; TreeSHAP was parallelized over 8 worker processes. Code and data are available in the project repository.
+
+\section{Results}
+\subsection{Q1: Does the explanation domain help?}
+Table~\ref{tab:q1} shows that XGBoost alone detects only 37.9 percent of zero-day attacks. Every second-stage configuration raises this, and SHAP inputs give the largest gains: the autoencoder on SHAP vectors reaches 76.6 percent (benign-trained) and 78.5 percent (all-trained) fused zero-day recall, against 73.7 percent and 60.0 percent for the same autoencoder on raw features. The advantage is clearest among the flows XGBoost passes as benign, which are the only flows where the second stage can add a true detection. There, SHAP inputs reach an AUROC of 0.94 to 0.98 against 0.90 to 0.94 for raw inputs in every configuration.
+
+The gain is not free. SHAP-based systems have a fused FPR of 3.9 to 4.8 percent against 3.1 to 3.4 percent for raw inputs and 2.7 percent for XGBoost alone, even though all thresholds target 2 percent on validation data. The SHAP detectors therefore transfer less well from validation to the shifted test distribution. Over the whole test set, the zero-day AUROC of SHAP inputs is not uniformly better: for the benign-trained autoencoder it is 0.671 against 0.747 on raw features. The explanation domain helps exactly where it is used, on the flows that XGBoost misses, rather than everywhere. Even so, every SHAP configuration improves F1 and MCC over its raw counterpart, and the best configuration is still far below the 12.7 percent FPR implied by the original 95th-percentile threshold.
+
+\begin{table*}[t]
+\caption{Q1: Second-stage input and detector, NSL-KDD official split, threshold at 2\% validation FPR, OR-fused with XGBoost}
+\label{tab:q1}
+\centering
+\begin{tabular}{lllccccccc}
+\toprule
+Train data & Input & Detector & ZD AUROC & AUROC on XGB-missed & ZD recall (2nd stage) & Fused ZD recall & Fused FPR & Fused F1 & Fused MCC \\
+\midrule
+-- & -- & XGBoost only & -- & -- & -- & 0.379 & 0.027 & 0.786 & 0.643 \\
+\midrule
+\multirow{6}{*}{Benign} & Raw & AE & 0.747 & 0.937 & 0.682 & 0.737 & 0.033 & 0.866 & 0.745 \\
+ & Raw & IForest & 0.682 & 0.913 & 0.497 & 0.626 & 0.032 & 0.836 & 0.703 \\
+ & SHAP & AE & 0.671 & \textbf{0.977} & 0.766 & 0.766 & 0.044 & \textbf{0.890} & \textbf{0.777} \\
+ & SHAP & IForest & 0.736 & 0.968 & 0.753 & 0.754 & 0.039 & 0.867 & 0.744 \\
+ & Concat & AE & 0.661 & 0.963 & 0.746 & 0.746 & 0.044 & 0.880 & 0.762 \\
+ & Concat & IForest & 0.707 & 0.955 & 0.722 & 0.729 & 0.031 & 0.859 & 0.735 \\
+\midrule
+\multirow{6}{*}{All} & Raw & AE & 0.888 & 0.931 & 0.442 & 0.600 & 0.034 & 0.849 & 0.720 \\
+ & Raw & IForest & 0.821 & 0.903 & 0.429 & 0.530 & 0.031 & 0.823 & 0.687 \\
+ & SHAP & AE & 0.895 & 0.940 & 0.709 & \textbf{0.785} & 0.048 & 0.888 & 0.772 \\
+ & SHAP & IForest & 0.882 & 0.962 & 0.633 & 0.704 & 0.039 & 0.867 & 0.744 \\
+ & Concat & AE & \textbf{0.903} & 0.939 & 0.627 & 0.720 & 0.036 & 0.872 & 0.753 \\
+ & Concat & IForest & 0.860 & 0.947 & 0.443 & 0.559 & 0.030 & 0.825 & 0.690 \\
+\bottomrule
+\multicolumn{10}{l}{\footnotesize ZD: zero-day. AE: autoencoder. ``AUROC on XGB-missed'': zero-day vs.\ benign among flows with $p(x)<0.5$.}
+\end{tabular}
+\end{table*}
+
+\subsection{Q2: Feature reduction}
+Keeping the ten features with the largest mean absolute SHAP value (src\_bytes, dst\_host\_srv\_count, dst\_bytes, service, dst\_host\_serror\_rate, dst\_host\_same\_srv\_rate, dst\_host\_diff\_srv\_rate, count, dst\_host\_srv\_serror\_rate, dst\_host\_rerror\_rate) lowers XGBoost accuracy only from 0.795 to 0.786. However, XGBoost zero-day recall falls from 0.379 to 0.335, and the SHAP autoencoder's zero-day AUROC is unchanged (0.676 against 0.671). The features that matter for known attacks are not necessarily those that reveal novel ones, so aggressive reduction trades some zero-day sensitivity for efficiency. With interventional TreeSHAP and a fixed 500-flow background, the per-flow SHAP cost did not fall (0.95 against 0.84~ms), because it is dominated by the background size rather than the number of features.
+
+\subsection{Q3: Do SHAP and LIME agree?}
+Over 200 random test flows the SHAP and LIME top-5 feature sets overlap by 0.50 on average, and only 49.5 percent of flows reach an overlap of 0.6. The top-1 feature agrees for 81.5 percent of flows. The two explainers thus agree on the dominant reason but not on the supporting evidence, confirming the value of a consistency check~\cite{nugraha2025versatile}. If explanations are used as input to a downstream detector, the choice of explainer is itself a modeling decision.
+
+\subsection{Q4: Explaining the alarm}
+Table~\ref{tab:q4} evaluates alarm explanations for 500 zero-day flows flagged by the benign-trained SHAP autoencoder. Replacing the five features with the largest reconstruction error by their benign mean lowers the anomaly score by 45.9 percent on average, compared with 5.2 percent for five random features. The explanation is therefore faithful to the detector. It is reasonably stable across retraining (0.73 top-5 overlap) and concentrated (the top five of 41 features carry 53 percent of the error). The features most often named are dst\_host\_rerror\_rate, diff\_srv\_rate, srv\_rerror\_rate, srv\_serror\_rate, src\_bytes and rerror\_rate. They point to unusual explanation patterns in connection-error and service-diversity statistics. The second stage can thus report not only that a flow is anomalous but which part of the classifier's reasoning is unusual, at no extra cost.
+
+\begin{table}[t]
+\caption{Q4: Alarm explanations of the SHAP autoencoder (500 flagged zero-day flows)}
+\label{tab:q4}
+\centering
+\begin{tabular}{lc}
+\toprule
+Metric & Value \\
+\midrule
+Score drop, top-5 abnormal features replaced & 0.459 \\
+Score drop, 5 random features replaced & 0.052 \\
+Stability (top-5 overlap, two seeds) & 0.728 \\
+Sparsity (error share in top 5 of 41) & 0.532 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Q5: Robustness to SHAP-guided evasion}
+The greedy SHAP-guided attack evades XGBoost for 89.0 percent of the 300 detected attacks, changing a median of two controllable features. Table~\ref{tab:q5} shows how many of these evading flows each second stage still flags. The SHAP autoencoder recovers 94.8 percent, against 82.4 percent for the raw-feature autoencoder: moving features toward benign values to fool the classifier leaves an atypical explanation pattern. The effect depends on the detector, however. The SHAP Isolation Forest recovers only 69.3 percent against 78.3 percent on raw features, a larger drop from its pre-evasion rate. This attack does not know the second stage exists; an adaptive attacker that also targets the explanation~\cite{slack2020fooling} remains to be studied.
+
+\begin{table}[t]
+\caption{Q5: Evading attacks still flagged by the second stage}
+\label{tab:q5}
+\centering
+\begin{tabular}{llccc}
+\toprule
+Input & Detector & After evasion & Before evasion & Benign flagged \\
+\midrule
+Raw & AE & 0.824 & 0.843 & 0.020 \\
+Raw & IForest & 0.783 & 0.816 & 0.018 \\
+SHAP & AE & \textbf{0.948} & 1.000 & 0.044 \\
+SHAP & IForest & 0.693 & 0.996 & 0.039 \\
+Concat & AE & 0.906 & 1.000 & 0.044 \\
+Concat & IForest & 0.757 & 0.918 & 0.026 \\
+\bottomrule
+\multicolumn{5}{l}{\footnotesize Detectors trained on benign flows; threshold at 2\% validation FPR.}
+\end{tabular}
+\end{table}
+
+\subsection{Q6: Cost}
+Interventional TreeSHAP took 0.84~ms per flow over eight worker processes, against 37~ms per flow for LIME on one core. XGBoost trained in 1.7~s, the Isolation Forest in 1.5~s and the autoencoder in 69~s. Scoring by either detector costs under 0.01~ms per flow. Explanation is therefore the dominant per-flow cost of the pipeline, and its background size, not the detector, is the main lever for real-time use.
+
+\section{Discussion and Limitations}
+The pilot supports a nuanced version of the original claim. Explanations help the second stage find zero-day attacks that the classifier lets through, and they make the second stage both explainable and harder to bypass by naive evasion. But they raise false alarms under distribution shift, they do not improve anomaly ranking over the whole test set, and they inherit the instability of the explainer, which is visible in the disagreement between SHAP and LIME.
+
+The evidence is limited. We use one dataset with a single, fixed new-attack split, one seed, two detectors and a non-adaptive attacker. NSL-KDD is dated, and its test set differs from the training distribution even for benign traffic, which inflates false alarms for every detector. The controllable feature list in Q5 is a judgment call. These results should be read as hypotheses to confirm with several seeds, leave-one-attack-family-out splits and a second dataset.
+
+\section{Conclusion}
+We evaluated explanation-based zero-day intrusion detection on six criteria in a single, reproducible pipeline. On NSL-KDD, an autoencoder trained on SHAP explanations roughly doubles the zero-day recall of an XGBoost detector at a 2 percent validation false alarm budget, beats the same autoencoder on raw features, provides faithful explanations of its own alarms, and still flags most attacks that evade the classifier. In exchange, the false alarm rate rises, and conclusions depend on which explainer is used. Future work will extend the benchmark to more seeds, datasets and attack families, and to adaptive attackers.
+
+\bibliographystyle{IEEEtran}
+\bibliography{../refs}
+
+\end{document}

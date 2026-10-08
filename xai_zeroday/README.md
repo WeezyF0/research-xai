@@ -7,7 +7,7 @@ plus a pilot study covering feature reduction, SHAP-vs-LIME agreement, explainin
     uv venv --python 3.11 .venv
     uv pip install --python .venv/bin/python numpy pandas scikit-learn xgboost shap scipy matplotlib torch lime tabulate
 
-## Data (not committed; put under data/)
+## Data (committed under data/)
 - NSL-KDD: KDDTrain+.txt, KDDTest+.txt -> data/nsl_kdd/  (github.com/defcom17/NSL_KDD)
 - UNSW-NB15 official train/test CSVs with attack_cat -> data/unsw_nb15/{train,test}.csv
   (huggingface.co/datasets/Mireu-Lab/UNSW-NB15; note the file names are swapped vs the official partitions, handled in data.py)

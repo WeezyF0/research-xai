@@ -1,6 +1,5 @@
 .venv/
 cache/
-data/
 __pycache__/
 *.log
 results/quick.csv
